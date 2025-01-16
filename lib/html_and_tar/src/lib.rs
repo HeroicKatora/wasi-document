@@ -78,7 +78,7 @@ impl TarEngine {
 
         let mut this = TarHeader::EMPTY;
         this.name[1..][..all_except_close].copy_from_slice(&html_head[..all_except_close]);
-        this.name[1..][all_except_close..][..5].copy_from_slice(b"__A=\"");
+        this.name[1..][all_except_close..][..6].copy_from_slice(b" __A=\"");
         this.prefix[153..].copy_from_slice(b"\">");
         this.typeflag = b'0';
 
@@ -98,20 +98,27 @@ impl TarEngine {
         }
     }
 
-    pub fn escaped_insert_base64(&mut self, Entry { name, data }: Entry) -> EscapedData {
+    fn qualify_name_for_html_attribute(name: &str) -> &str {
         assert!(name.is_ascii(), "Name must be ascii");
 
+        // FIXME: more permissive than reality.
         assert!(
-            name.chars().all(|c| c.is_ascii_alphanumeric()),
+            name.chars().all(|c| c != '\"'),
             "Name {name} must be HTML compatible without escapes"
         );
+
+        name
+    }
+
+    pub fn escaped_insert_base64(&mut self, Entry { name, data }: Entry) -> EscapedData {
+        let qualname = Self::qualify_name_for_html_attribute(name);
 
         let padding = self.pad_to_fit();
         let data = STANDARD.encode(data).into_bytes();
 
-        const START: &[u8] = b"\0<template __A=\"";
+        const START: &[u8] = b"\0<template class=\"wah_polyglot_data\" __A=\"";
         const DATA_START: &[u8] = b"\">";
-        const ID: &[u8] = b"\" id=\"";
+        const ID: &[u8] = b"\" _wahtml_id=\"";
         const CONT: &[u8] = b"\" __B=\"";
 
         let mut this = TarHeader::EMPTY;
@@ -125,8 +132,8 @@ impl TarEngine {
 
         let mut file = TarHeader::EMPTY;
         let end_start = this.prefix.len() - DATA_START.len();
-        file.name[..name.len()].copy_from_slice(name.as_bytes());
-        file.name[name.len()..][1..][..CONT.len()].copy_from_slice(CONT);
+        file.name[..qualname.len()].copy_from_slice(qualname.as_bytes());
+        file.name[qualname.len()..][1..][..CONT.len()].copy_from_slice(CONT);
         file.assign_size(data.len());
         file.prefix[end_start..].copy_from_slice(DATA_START);
         file.assign_checksum();
@@ -144,19 +151,14 @@ impl TarEngine {
     }
 
     pub fn escaped_continue_base64(&mut self, Entry { name, data }: Entry) -> EscapedData {
-        assert!(name.is_ascii(), "Name must be ascii");
-
-        assert!(
-            name.chars().all(|c| c.is_ascii_alphanumeric()),
-            "Name {name} must be HTML compatible without escapes"
-        );
+        let qualname = Self::qualify_name_for_html_attribute(name);
 
         let padding = self.pad_to_fit();
         let data = STANDARD.encode(data).into_bytes();
 
-        const START: &[u8] = b"\0</template><template __A=\"";
+        const START: &[u8] = b"\0</template><template class=\"wah_polyglot_data\" __A=\"";
         const DATA_START: &[u8] = b"\">";
-        const ID: &[u8] = b"\" id=\"";
+        const ID: &[u8] = b"\" _wahtml_id=\"";
         const CONT: &[u8] = b"\" __B=\"";
 
         let mut this = TarHeader::EMPTY;
@@ -170,8 +172,8 @@ impl TarEngine {
 
         let mut file = TarHeader::EMPTY;
         let end_start = file.prefix.len() - DATA_START.len();
-        file.name[..name.len()].copy_from_slice(name.as_bytes());
-        file.name[name.len()..][1..][..CONT.len()].copy_from_slice(CONT);
+        file.name[..qualname.len()].copy_from_slice(qualname.as_bytes());
+        file.name[qualname.len()..][1..][..CONT.len()].copy_from_slice(CONT);
         file.assign_size(data.len());
         file.prefix[end_start..].copy_from_slice(DATA_START);
         file.assign_checksum();
@@ -192,9 +194,11 @@ impl TarEngine {
     /// the next blocks of such data (again starting as `escaped_insert_base64`).
     pub fn escaped_end(&mut self, skip: usize) -> EscapedSentinel {
         let padding = self.pad_to_fit();
+        const START: &[u8] = b"\0</template><template>";
         const END: &[u8] = b"\0</template>";
 
         let mut this = TarHeader::EMPTY;
+        this.name[..START.len()].copy_from_slice(START);
         this.assign_size(skip);
         this.prefix[155 - END.len()..].copy_from_slice(END);
         this.assign_standards();
@@ -206,8 +210,24 @@ impl TarEngine {
         }
     }
 
-    pub fn insert_end() -> TarHeader {
-        todo!()
+    /// End a sequence of escaped data with a tar EOF.
+    pub fn escaped_eof(&mut self) -> EscapedData {
+        EscapedData {
+            padding: self.pad_to_fit(),
+            header: TarHeader::EMPTY,
+            file: TarHeader::EMPTY,
+            data: b"</template>".to_vec(),
+        }
+    }
+
+    /// Outside a data escape block, insert a tar EOF marker.
+    pub fn insert_eof(&mut self) -> EscapedData {
+        EscapedData {
+            padding: self.pad_to_fit(),
+            header: TarHeader::EMPTY,
+            file: TarHeader::EMPTY,
+            data: vec![],
+        }
     }
 
     fn pad_to_fit(&mut self) -> &'static [u8] {

@@ -1,7 +1,11 @@
-use clap::Parser;
 use std::{io::Read, io::Write, path::PathBuf};
 
-fn main() -> Result<(), std::io::Error> {
+use clap::Parser;
+#[cfg(feature = "target-html+tar")]
+mod dom;
+mod error;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let stage_2 = std::fs::read(&args.stage_2)?;
@@ -97,15 +101,21 @@ fn main() -> Result<(), std::io::Error> {
             let wasm = Base64Display::new(&wasm, &general_purpose::STANDARD);
             let data_uri = format!("data:application/octet-stream;base64,{wasm}");
             let data_uri_constructor = format!("{data_uri}");
-            let with_data = template.replace("__REPLACE_THIS_WITH_WASM_AS_A_DATA_URI__", &data_uri_constructor);
+            let with_data = template.replace(
+                "__REPLACE_THIS_WITH_WASM_AS_A_DATA_URI__",
+                &data_uri_constructor,
+            );
 
             // 16 MB is generally okay..
             let loaded = if data_uri.len().ilog2() < 24 {
                 // Nothing to do..
-                with_data.replace("__REPLACE_THIS_WITH_URI_LOADER__", "await (async function() {
+                with_data.replace(
+                    "__REPLACE_THIS_WITH_URI_LOADER__",
+                    "await (async function() {
                     let doc = await fetch(URI_SRC);
                     return await doc.arrayBuffer();
-                })()")
+                })()",
+                )
             } else if data_uri.len().ilog2() < 31 {
                 // For larger module (scarily large) we need a different strategy that is not yet
                 // implemented here. In particular, Firefox makes a 32MB restriction on the size of
@@ -115,34 +125,84 @@ fn main() -> Result<(), std::io::Error> {
                 //
                 // FIXME: Evaluate ReadableByteStream for chunk-based yields <https://developer.mozilla.org/en-US/docs/Web/API/ReadableByteStreamController>
                 //
-                with_data.replace("__REPLACE_THIS_WITH_URI_LOADER__", r#"await (async function() {
-                    const b64 = URI_SRC.slice(URI_SRC.indexOf(",")+1);
-                    const buffer = new ArrayBuffer((b64.length / 4) * 3 - b64.match(/=*$/)[0].length);
-                    const IDX_STR = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-                    const view = new Uint8Array(buffer);
-                    console.log(`Loading ${view.length} bytes of Base64 module data`);
-
-                    let i = 0;
-                    let j = 0;
-                    for (; j < b64.length;) {
-                        let a = IDX_STR.indexOf(b64.charAt(j++));
-                        let b = IDX_STR.indexOf(b64.charAt(j++));
-                        let c = IDX_STR.indexOf(b64.charAt(j++));
-                        let d = IDX_STR.indexOf(b64.charAt(j++));
-
-                        view[i++] = (a << 2) | (b >> 4);
-                        if (c < 64) view[i++] = ((b & 0xf) << 4) | (c >> 2);
-                        if (d < 64) view[i++] = ((c & 0x3) << 6) | (d >> 0);
-                    }
-
-                    return view;
-                })()"#)
+                with_data.replace(
+                    "__REPLACE_THIS_WITH_URI_LOADER__",
+                    include_str!("stage-snippet-load-URI-b64.js"),
+                )
             } else {
                 // This is too large for most String implementations..
                 panic!("The `html` target does not support modules larger than 2GB.");
             };
 
             loaded.into()
+        }
+        #[cfg(not(feature = "target-html+tar"))]
+        Target::HtmlPlusTar => {
+            return Err(error::UnsupportedFeatureError {
+                what_to_use: "target-html+tar".into(),
+                feature: "target-html+tar".into(),
+            })?;
+        }
+        #[cfg(feature = "target-html+tar")]
+        Target::HtmlPlusTar => {
+            let Some(template) = args.index_html else {
+                panic!("The `html+tar` target embeds into the index HTML.");
+            };
+
+            let source = std::fs::read_to_string(&template)?;
+            let source = dom::SourceDocument::new(&source);
+            let binary_wasm = encoder.finish();
+            let source_script = include_bytes!("stage0-html_plus_tar.js");
+
+            let structure = source.html_tar_structure()?;
+
+            let mut engine = html_and_tar::TarEngine::default();
+            let mut seq_of_bytes: Vec<&[u8]> = vec![];
+
+            let mut head_span = source.span(structure.html_tag);
+            head_span.end = head_span.start + structure.html_insertion_point;
+            head_span.start = 0;
+
+            let head = &source[head_span];
+            let where_to_insert = source.span(structure.insertion_tag);
+            let where_to_enter = source.span(structure.stage0);
+
+            assert!(where_to_insert.end < where_to_enter.start);
+
+            let init = engine.start_of_file(head.as_bytes(), where_to_insert.start);
+            seq_of_bytes.push(init.header.as_bytes());
+            seq_of_bytes.push(init.extra.as_slice());
+            seq_of_bytes.push(source[init.consumed..where_to_insert.start].as_bytes());
+
+            let mut pushed_data = vec![];
+
+            pushed_data.push(engine.escaped_insert_base64(html_and_tar::Entry {
+                name: "boot/wah-init.wasm",
+                data: &binary_wasm,
+            }));
+
+            for data in &pushed_data {
+                seq_of_bytes.push(data.padding);
+                seq_of_bytes.push(data.header.as_bytes());
+                seq_of_bytes.push(data.file.as_bytes());
+                seq_of_bytes.push(data.data.as_slice());
+            }
+
+            // FIXME: not sure if we should just do the open-end thing instead of EOF..
+
+            let eof = engine.escaped_eof();
+            seq_of_bytes.push(eof.padding);
+            seq_of_bytes.push(eof.header.as_bytes());
+            seq_of_bytes.push(eof.file.as_bytes());
+            seq_of_bytes.push(eof.data.as_slice());
+
+            seq_of_bytes.push(source[where_to_insert.end..where_to_enter.start].as_bytes());
+            seq_of_bytes.push(b"<script>");
+            seq_of_bytes.push(source_script);
+            seq_of_bytes.push(b"</script>");
+            seq_of_bytes.push(source[where_to_enter.end..].as_bytes());
+
+            seq_of_bytes.join(&b""[..])
         }
     };
 
@@ -241,6 +301,7 @@ struct Args {
 enum Target {
     WasmPlusHtml,
     Html,
+    HtmlPlusTar,
 }
 
 impl core::str::FromStr for Target {
@@ -250,6 +311,7 @@ impl core::str::FromStr for Target {
         match s {
             "wasm" => Ok(Self::WasmPlusHtml),
             "wasm+html" => Ok(Self::WasmPlusHtml),
+            "html+tar" => Ok(Self::HtmlPlusTar),
             "html" => Ok(Self::Html),
             _ => Err(format!("Unknown target selection {s}")),
         }

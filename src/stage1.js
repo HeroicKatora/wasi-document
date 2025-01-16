@@ -27,7 +27,9 @@ async function init(bytes, wasm) {
   /** wasm-bindgen: creates one 
   */
   let wasmblob = new Blob([bytes], { type: 'application/wasm' });
-  stage2_module.default(Promise.resolve(new Response(wasmblob)));
+  stage2_module.default({
+    module_or_path: Promise.resolve(new Response(wasmblob))
+  });
 }
 
 export default init;

@@ -31,6 +31,26 @@ See [examples/yew/Readme.md][examples/yew/Readme.md] for a detailed description.
 
 Or [TodoMVC deployed on gh-pages](https://heroickatora.github.io/wasm-as-html/examples/yew/todomvc.html).
 
+## Tricks related to tar compatibility
+
+The file contents for the zip archive and bootstrapping are interpolated into
+the HTML when choosing the `html+tar` target. However, due to compatibility
+issues and concerns this can not happen verbatim as bytes. We prioritize the
+ability to preserve the original file structure and the majority of its
+execution model. Instead, the contents are encoded firstly as base64 and
+secondly with additional special entries with empty filenames.
+
+The standard `tar` implementation will skip files by complaining loudly. To get
+an overview of the contained files with your standard system tools we
+recommend:
+
+```bash
+tar xf $your_archive_file.html --exclude='' --to-command='base64 -d | file -'
+```
+
+You may want to modify this as a template for similar interactions with the
+contained data.
+
 ## Why this specifically, or reasons against PDF
 
 Let me offer some thoughts on the state of document pages to highlight the
