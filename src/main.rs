@@ -125,28 +125,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 //
                 // FIXME: Evaluate ReadableByteStream for chunk-based yields <https://developer.mozilla.org/en-US/docs/Web/API/ReadableByteStreamController>
                 //
-                with_data.replace("__REPLACE_THIS_WITH_URI_LOADER__", r#"await (async function() {
-                    const b64 = URI_SRC.slice(URI_SRC.indexOf(",")+1);
-                    const buffer = new ArrayBuffer((b64.length / 4) * 3 - b64.match(/=*$/)[0].length);
-                    const IDX_STR = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-                    const view = new Uint8Array(buffer);
-                    console.log(`Loading ${view.length} bytes of Base64 module data`);
-
-                    let i = 0;
-                    let j = 0;
-                    for (; j < b64.length;) {
-                        let a = IDX_STR.indexOf(b64.charAt(j++));
-                        let b = IDX_STR.indexOf(b64.charAt(j++));
-                        let c = IDX_STR.indexOf(b64.charAt(j++));
-                        let d = IDX_STR.indexOf(b64.charAt(j++));
-
-                        view[i++] = (a << 2) | (b >> 4);
-                        if (c < 64) view[i++] = ((b & 0xf) << 4) | (c >> 2);
-                        if (d < 64) view[i++] = ((c & 0x3) << 6) | (d >> 0);
-                    }
-
-                    return view;
-                })()"#)
+                with_data.replace(
+                    "__REPLACE_THIS_WITH_URI_LOADER__",
+                    include_str!("stage-snippet-load-URI-b64.js"),
+                )
             } else {
                 // This is too large for most String implementations..
                 panic!("The `html` target does not support modules larger than 2GB.");
@@ -177,21 +159,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut engine = html_and_tar::TarEngine::default();
             let mut seq_of_bytes: Vec<&[u8]> = vec![];
 
-            let head = &source[source.span(structure.html_tag)];
+            let mut head_span = source.span(structure.html_tag);
+            head_span.end = head_span.start + structure.html_insertion_point;
+            head_span.start = 0;
+
+            let head = &source[head_span];
             let where_to_insert = source.span(structure.insertion_tag);
             let where_to_enter = source.span(structure.stage0);
 
             assert!(where_to_insert.end < where_to_enter.start);
 
-            let init = engine.start_of_file(head.as_bytes(), where_to_insert.end);
+            let init = engine.start_of_file(head.as_bytes(), where_to_insert.start);
             seq_of_bytes.push(init.header.as_bytes());
             seq_of_bytes.push(init.extra.as_slice());
-            seq_of_bytes.push(source[init.consumed..where_to_insert.end].as_bytes());
+            seq_of_bytes.push(source[init.consumed..where_to_insert.start].as_bytes());
 
             let mut pushed_data = vec![];
 
             pushed_data.push(engine.escaped_insert_base64(html_and_tar::Entry {
-                name: "wah_polyglot_stage2",
+                name: "boot/wah-init.wasm",
                 data: &binary_wasm,
             }));
 
@@ -202,14 +188,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 seq_of_bytes.push(data.data.as_slice());
             }
 
-            let html_len = source[..].len() - where_to_insert.end;
-            let end = engine.escaped_end(html_len + source_script.len());
+            // FIXME: not sure if we should just do the open-end thing instead of EOF..
 
-            seq_of_bytes.push(end.padding);
-            seq_of_bytes.push(end.header.as_bytes());
+            let eof = engine.escaped_eof();
+            seq_of_bytes.push(eof.padding);
+            seq_of_bytes.push(eof.header.as_bytes());
+            seq_of_bytes.push(eof.file.as_bytes());
+            seq_of_bytes.push(eof.data.as_slice());
 
             seq_of_bytes.push(source[where_to_insert.end..where_to_enter.start].as_bytes());
+            seq_of_bytes.push(b"<script>");
             seq_of_bytes.push(source_script);
+            seq_of_bytes.push(b"</script>");
             seq_of_bytes.push(source[where_to_enter.end..].as_bytes());
 
             seq_of_bytes.join(&b""[..])

@@ -3,6 +3,7 @@ use lithtml::{Dom, Node};
 
 pub struct Structure {
     pub html_tag: TagSpan,
+    pub html_insertion_point: usize,
     pub insertion_tag: TagSpan,
     pub stage0: TagSpan,
 }
@@ -24,7 +25,7 @@ pub struct SourceDocument<'text> {
     by_line: Vec<usize>,
 }
 
-fn parse_tar_tags(doc: &str) -> Result<Structure, Box<dyn Error>> {
+fn parse_tar_tags(source: &SourceDocument, doc: &str) -> Result<Structure, Box<dyn Error>> {
     const ID_TAR_CONTENT: &str = "WAH_POLYGLOT_HTML_PLUS_TAR_CONTENT";
     const ID_TAR_STAGE0: &str = "WAH_POLYGLOT_HTML_PLUS_TAR_STAGE0";
 
@@ -34,6 +35,8 @@ fn parse_tar_tags(doc: &str) -> Result<Structure, Box<dyn Error>> {
         node.element().filter(|el| el.name.to_lowercase() == "html")
     })
     .ok_or_else(|| no_node("begin of Tar file", "starting `<html>` tag"))?;
+
+    let html_insertion_point = source.element_end_of_start_tag(html);
 
     let insertion = find_element(&dom, |node| {
         node.element()
@@ -85,6 +88,7 @@ fn parse_tar_tags(doc: &str) -> Result<Structure, Box<dyn Error>> {
 
     Ok(Structure {
         html_tag: html.into(),
+        html_insertion_point,
         insertion_tag: insertion.into(),
         stage0: stage0.into(),
     })
@@ -121,14 +125,38 @@ impl<'text> SourceDocument<'text> {
 
     pub fn span(&self, span: TagSpan) -> ops::Range<usize> {
         // FIXME: unsure if the `column` attribute is by character or byte offset.
-        let start = self.by_line[span.start.line] + span.start.column;
-        let end = self.by_line[span.end.line] + span.end.column;
+        let start = self.by_line[span.start.line.checked_sub(1).unwrap()]
+            + span.start.column.checked_sub(1).unwrap();
+        let end = self.by_line[span.end.line.checked_sub(1).unwrap()]
+            + span.end.column.checked_sub(1).unwrap();
 
         start..end
     }
 
+    pub fn element_end_of_start_tag(&self, el: &lithtml::Element) -> usize {
+        let span: TagSpan = el.into();
+
+        let non_ending_leq = el
+            .attributes
+            .keys()
+            .chain(el.attributes.values().flat_map(|opt| opt.as_ref()))
+            .flat_map(|st| st.chars())
+            .filter(|&ch| ch == '>')
+            .count();
+
+        let outer_html = &self[self.span(span)];
+
+        let (closing_leq, _) = outer_html
+            .char_indices()
+            .filter(|&(_, ch)| ch == '>')
+            .nth(non_ending_leq)
+            .expect("html opening tag not closed?");
+
+        closing_leq + '>'.len_utf8()
+    }
+
     pub fn html_tar_structure(&self) -> Result<Structure, Box<dyn Error>> {
-        parse_tar_tags(self.text)
+        parse_tar_tags(self, self.text)
     }
 }
 
