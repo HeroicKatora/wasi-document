@@ -150,11 +150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let source = std::fs::read_to_string(&template)?;
-            let source = dom::SourceDocument::new(&source);
+            let mut source = dom::SourceDocument::new(&source);
             let binary_wasm = encoder.finish();
             let source_script = include_bytes!("stage0-html_plus_tar.js");
 
-            let structure = source.html_tar_structure()?;
+            let structure = source.prepare_tar_structure()?;
 
             let mut engine = html_and_tar::TarEngine::default();
             let mut seq_of_bytes: Vec<&[u8]> = vec![];
