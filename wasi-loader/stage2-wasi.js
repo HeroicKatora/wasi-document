@@ -42,8 +42,8 @@ async function fallback_shell(configuration, error) {
   document.documentElement.appendChild(mkDirElement(rootfs.dir));
 }
 
-async function mount(promise) {
-  const response = await promise;
+async function mount({ module_or_path, wasi_root_fs }) {
+  const response = await module_or_path;
   const [body_wasm, body_file] = response.body.tee();
 
   let wasm = await WebAssembly.compileStreaming(new Response(body_wasm, {
@@ -52,7 +52,9 @@ async function mount(promise) {
       'headers': response.headers,
     }));
 
-  const file_array_buffer = async function(response, body_file) {
+  // Convert a body (compatible with `Response`) into an array buffer of its
+  // contents by re-emulating an existing previous response reception.
+  const body_to_array_buffer = async function(response, body_file) {
     const newbody = new Response(body_file, {
       'status': response.status,
       'statusText': response.statusText,
@@ -66,8 +68,7 @@ async function mount(promise) {
     args: ["exe"],
     env: [],
     fds: [],
-    // FIXME: sort out the mess of naming?
-    wasm: await file_array_buffer(response, body_file),
+    wasm: await body_to_array_buffer(response, body_file),
     wasm_module: wasm,
   };
 
@@ -202,13 +203,27 @@ async function mount(promise) {
     document.documentElement.textContent += `Initialized towards stage3 in ${ops.length-256} steps`;
   }
 
-  // document.documentElement.textContent = JSON.stringify(configuration);
-
   let args = configuration.args;
   let env = configuration.env;
   let fds = configuration.fds;
   let filesystem = configuration.fds[3];
   configuration.WASI = WASI;
+
+  if (wasi_root_fs) {
+    // The given layer will be underlaid the inputs to the boot archive extractor.
+    for (const [key, value] of Object.entries(wasi_root_fs)) {
+      const maybefd = filesystem.path_open(WASI.OFLAGS_CREAT, key);
+      const data_array = new UInt8Array(value);
+
+      // Error handling, supposing this signals ENOSUP just as well.
+      if (!ret.fd_obj) {
+        continue;
+      }
+
+      ret.fd_obj.fd_write(data_array);
+    }
+  }
+
 
   configuration.wasi = new WASI(args, env, fds);
   // The primary is setup as the executable image of proc/0/exe (initially the stage4).
