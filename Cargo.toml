@@ -21,6 +21,8 @@ rev = "26ecab4586e683c81d2c91ab796b98cd2fee90cb"
 optional = true
 [dependencies.html_and_tar]
 workspace = true
+[dependencies.zip]
+version = "2"
 
 [features]
 default = ["target-html+tar"]

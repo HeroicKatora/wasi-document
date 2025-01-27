@@ -1,4 +1,4 @@
-async function init(bytes, wasm) {
+async function init(bytes, wasm, wasi_root_fs) {
   let index_html = WebAssembly.Module.customSections(wasm, 'wah_polyglot_stage1_html');
 
   if (index_html.length) {
@@ -28,7 +28,8 @@ async function init(bytes, wasm) {
   */
   let wasmblob = new Blob([bytes], { type: 'application/wasm' });
   stage2_module.default({
-    module_or_path: Promise.resolve(new Response(wasmblob))
+    module_or_path: Promise.resolve(new Response(wasmblob)),
+    wasi_root_fs: wasi_root_fs,
   });
 }
 

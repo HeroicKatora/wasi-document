@@ -11,9 +11,12 @@ pub fn main() -> Result<(), zip::result::ZipError> {
     let wasm_binary = std::fs::read("proc/self/exe")?;
 
     let data = std::io::Cursor::new(data);
-    let mut archive = ZipArchive::new(data)?;
 
-    archive.extract("/")?;
+    // Hm, maybe we should be more strict. This is only optional if we intended it to be.
+    if let Ok(mut archive) = ZipArchive::new(data) {
+        archive.extract("/")?;
+    }
+
     std::fs::write("boot/index.mjs", STAGE3_JS)?;
 
     Ok(())

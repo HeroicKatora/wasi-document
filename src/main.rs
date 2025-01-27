@@ -6,7 +6,7 @@ mod dom;
 mod error;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     let stage_2 = std::fs::read(&args.stage_2)?;
     let wasm = match &args.wasm {
@@ -64,6 +64,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // NOTE: suppose that all third-stage loaders user the WASM module sections as the main source
+    // of truth for their init variant. Of course this need not hold and that's when this and the
+    // extra section loop should be re-examined.
+    if let Some(stage3) = &args.stage3 {
+        args.extra_section.push(ExtraSection {
+            name: "wah_polyglot_stage3".to_string(),
+            from_file: stage3.clone(),
+        });
+    }
+
     for extra in &args.extra_section {
         encoder.section(&wasm_encoder::CustomSection {
             name: &extra.name,
@@ -71,17 +81,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    if let Some(zip_file) = &args.zip {
-        let zip_data = std::fs::read(zip_file)?;
-        let name = args
-            .zip_section_name
-            .as_deref()
-            .unwrap_or("wah_polyglot_stage2_data");
+    let needs_zip_section = !matches!(args.target, Target::HtmlPlusTar);
 
-        encoder.section(&wasm_encoder::CustomSection {
-            name,
-            data: &zip_data,
-        });
+    if needs_zip_section {
+        if let Some(zip_file) = &args.zip {
+            let zip_data = std::fs::read(zip_file)?;
+            let name = args
+                .zip_section_name
+                .as_deref()
+                .unwrap_or("wah_polyglot_stage2_data");
+
+            encoder.section(&wasm_encoder::CustomSection {
+                name,
+                data: &zip_data,
+            });
+        }
     }
 
     let wasm = match args.target {
@@ -181,6 +195,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data: &binary_wasm,
             }));
 
+            if let Some(zip) = args.zip {
+                let file = std::fs::File::open(zip)?;
+                let mut archive = zip::read::ZipArchive::new(file)?;
+
+                for idx in 0..archive.len() {
+                    let mut file = archive.by_index(idx)?;
+
+                    let Some(name) = file.enclosed_name() else {
+                        continue;
+                    };
+
+                    let Some(name) = name.to_str() else {
+                        continue;
+                    };
+
+                    let mut data = vec![];
+                    file.read_to_end(&mut data)?;
+
+                    let entry =
+                        engine.escaped_insert_base64(html_and_tar::Entry { name, data: &data });
+
+                    pushed_data.push(entry);
+                }
+            }
+
             for data in &pushed_data {
                 seq_of_bytes.push(data.padding);
                 seq_of_bytes.push(data.header.as_bytes());
@@ -264,6 +303,14 @@ struct Args {
 
     #[arg(long = "add-section")]
     extra_section: Vec<ExtraSection>,
+
+    /// A boot process to setup processing, within wasi.
+    ///
+    /// This is a shorthand for the appropriate section or file addition, depending on the target.
+    /// You can also enjoy this option being more stable if the boot details of any of these
+    /// targets changes.
+    #[arg(long = "stage3")]
+    stage3: Option<PathBuf>,
 
     /// A customized section name to use for the final zip section.
     ///

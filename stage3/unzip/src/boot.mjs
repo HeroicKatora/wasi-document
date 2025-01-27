@@ -32,44 +32,88 @@ export default async function(configuration) {
   let newWasi = new configuration.WASI(configuration.args, configuration.env, configuration.fds);
   document.__wah_wasi_imports = newWasi.wasiImport;
 
-  let testmodule = Object.keys(document.__wah_wasi_imports)
-    .map((name, _) => `export const ${name} = document.__wah_wasi_imports.${name};`)
-    .join('\n');
-  let wasi_blob = new Blob([testmodule], { type: 'application/javascript' });
-  let objecturl = URL.createObjectURL(wasi_blob);
+  const kernel_bindings = WebAssembly.Module.customSections(wasm, 'wah_polyglot_wasm_bindgen');
 
-  const bindgens = WebAssembly.Module.customSections(wasm, 'wah_polyglot_wasm_bindgen');
-  const wbg_source = new TextDecoder().decode(bindgens[0]).replace('wasi_snapshot_preview1', objecturl);
+  // A kernel module is any Module which exposes a default export.that conforms
+  // to our call interface. It will get passed a promise to the wasmblob
+  // response of its process image and should be an awaitable that resolves to
+  // the exports from the module. Simplistically this could be the `exports`
+  // attribute from the `Instance` itself.
+  let kernel_module = undefined;
+  if (kernel_bindings.length > 0) {
+    // Create a module that the kernel can `import` via ECMA semantics. This
+    // enables such kernel modules to be independent from our target. In fact,
+    // we do expect them to be created via Rust's `wasm-bindgen` for instance.
+    let testmodule = Object.keys(document.__wah_wasi_imports)
+      .map((name, _) => `export const ${name} = document.__wah_wasi_imports.${name};`)
+      .join('\n');
+    let wasi_blob = new Blob([testmodule], { type: 'application/javascript' });
+    let objecturl = URL.createObjectURL(wasi_blob);
 
-  let wbg_blob = new Blob([wbg_source], { type: 'application/javascript' });
-  let wbg_url = URL.createObjectURL(wbg_blob);
-  const m = await import(wbg_url);
+    // FIXME: should be an import map where `wasi_snapshot_preview1` is an
+    // alias for our just created object URL module.
+    const wbg_source = new TextDecoder().decode(kernel_bindings[0])
+      .replace('wasi_snapshot_preview1', objecturl);
+
+    let wbg_blob = new Blob([wbg_source], { type: 'application/javascript' });
+    let wbg_url = URL.createObjectURL(wbg_blob);
+    kernel_module = await import(wbg_url);
+  }
 
   const index_html = WebAssembly.Module.customSections(wasm, 'wah_polyglot_stage1_html');
-  document.documentElement.innerHTML = (new TextDecoder().decode(index_html[0]));
+  if (index_html.length > 0) {
+    document.documentElement.innerHTML = (new TextDecoder().decode(index_html[0]));
+  }
 
   const rootdir = configuration.fds[3];
   configuration.fds[0] = rootdir.path_open(0, "proc/0/fd/0", 0).fd_obj;
   configuration.fds[1] = rootdir.path_open(0, "proc/0/fd/1", 0).fd_obj;
   configuration.fds[2] = rootdir.path_open(0, "proc/0/fd/2", 0).fd_obj;
   configuration.args.length = 0;
-  configuration.args.push("scene-viewer");
-  configuration.args.push("default-scene/scene.gltf");
-  configuration.env.push("RUST_BACKTRACE=full");
+
+  const input_decoder = new TextDecoder('utf-8');
+  const assign_arguments = (path, push_with, cname) => {
+    cname = cname || 'cmdline';
+    let cmdline = undefined;
+    if (cmdline = rootdir.path_open(0, path).fd_obj) {
+      if (!cmdline instanceof configuration.WASI.OpenFile) {
+        console.log(`Invalid file source for ${cname} ignored`);
+      } else {
+        const data = cmdline.file.data;
+        let nul_split = -1;
+        while (nul_split = data.indexOf(0)) {
+          const arg = data.subarray(0, nul_split);
+          push_with(arg);
+          data = data.subarray(nul_split + 1);
+        }
+      }
+    }
+  }
+
+  assign_arguments("proc/0/cmdline", configuration.args.push, "cmdline");
+  assign_arguments("proc/0/environ", configuration.env.push, "environ");
 
   try {
     console.log('start', configuration);
 
     var source_headers = {};
     const wasmblob = new Blob([configuration.wasm], { type: 'application/wasm' });
-    const ret = await m.default(Promise.resolve(new Response(wasmblob, {
-      'headers': source_headers,
-    })));
 
-    await newWasi.start({ 'exports': ret });
+    if (kernel_module !== undefined) {
+      const ret = await kernel_module.default(Promise.resolve(new Response(wasmblob, {
+        'headers': source_headers,
+      })));
+
+      await newWasi.start({ 'exports': ret });
+    } else {
+      const imports = { 'wasi_snapshot_preview1': newWasi.wasiImport };
+      const instance = await WebAssembly.instantiate(wasm, imports);
+      await newWasi.start({ 'exports': instance.exports });
+    }
+
     console.log('done');
   } catch (e) {
-    console.log(e);
+    console.dir(typeof(e), e);
     console.log('at ', e.fileName, e.lineNumber, e.columnNumber);
     console.log(e.stack);
   } finally {
