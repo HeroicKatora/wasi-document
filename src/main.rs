@@ -214,7 +214,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     file.read_to_end(&mut data)?;
 
                     let entry =
-                        engine.escaped_insert_base64(html_and_tar::Entry { name, data: &data });
+                        engine.escaped_continue_base64(html_and_tar::Entry { name, data: &data });
+
+                    pushed_data.push(entry);
+                }
+            }
+
+            if let Some(root) = args.root_fs {
+                let iter = walkdir::WalkDir::new(&root).same_file_system(true);
+
+                for entry in iter {
+                    let entry = entry?;
+
+                    let full_path = entry.path();
+                    let meta = entry.metadata()?;
+
+                    let Ok(path) = full_path.strip_prefix(&root) else {
+                        continue;
+                    };
+
+                    let Some(name) = path.to_str() else {
+                        continue;
+                    };
+
+                    if !meta.is_file() {
+                        continue;
+                    }
+
+                    let data = std::fs::read(&full_path)?;
+
+                    let entry =
+                        engine.escaped_continue_base64(html_and_tar::Entry { name, data: &data });
 
                     pushed_data.push(entry);
                 }
@@ -297,9 +327,15 @@ struct Args {
     /// A zip file to attach.
     ///
     /// This file is added as a final section of the module (so its central archive is within the
-    /// last 512 bytes).
+    /// last 512 bytes). Note that some targets do not support the zip file. Provide the files with
+    /// a root fs instead, the archive will be unpacked accordingly.
     #[arg(short, long = "trailing-zip", alias = "zip")]
     zip: Option<PathBuf>,
+    /// A root file system to add.
+    ///
+    /// Incompatible with `zip`.
+    #[arg(long = "root-fs")]
+    root_fs: Option<PathBuf>,
 
     #[arg(long = "add-section")]
     extra_section: Vec<ExtraSection>,

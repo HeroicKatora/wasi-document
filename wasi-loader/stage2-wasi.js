@@ -40,6 +40,8 @@ async function fallback_shell(configuration, error) {
 
   document.documentElement.innerHTML += `<p>Filesystem: </p>`;
   document.documentElement.appendChild(mkDirElement(rootfs.dir));
+
+  console.log(error);
 }
 
 async function mount({ module_or_path, wasi_root_fs }) {
@@ -212,15 +214,40 @@ async function mount({ module_or_path, wasi_root_fs }) {
   if (wasi_root_fs) {
     // The given layer will be underlaid the inputs to the boot archive extractor.
     for (const [key, value] of Object.entries(wasi_root_fs)) {
-      const maybefd = filesystem.path_open(WASI.OFLAGS_CREAT, key);
-      const data_array = new UInt8Array(value);
+      let dirs = key.split('/');
+      const file = dirs.pop();
+
+      let basedir = filesystem;
+      for (let dir of dirs) {
+        // NOTE: should succeed with create_directory if we set OFLAGS_CREAT as
+        // well but some versions of the shim handle this situation badly. So
+        // do this in steps.
+        let reldir = basedir.path_open(0, dir, WASI.OFLAGS_DIRECTORY);
+
+        if (!reldir.fd_obj) {
+          basedir.path_create_directory(dir);
+          reldir = basedir.path_open(0, dir, WASI.OFLAGS_DIRECTORY);
+        }
+
+        if (!reldir.fd_obj) {
+          console.log('Did not create..', key, dir, reldir, filesystem);
+          break;
+        }
+
+        basedir = reldir.fd_obj;
+      }
+
+      // Open read-write with creation flags.
+      const maybefd = basedir.path_open(0, file, 1, 1);
 
       // Error handling, supposing this signals ENOSUP just as well.
-      if (!ret.fd_obj) {
+      if (!maybefd.fd_obj) {
+        console.log('Did not write..', file, key, maybefd, basedir);
         continue;
       }
 
-      ret.fd_obj.fd_write(data_array);
+      const data_array = new Uint8Array(value);
+      maybefd.fd_obj.file.data = data_array;
     }
   }
 

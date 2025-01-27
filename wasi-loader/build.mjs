@@ -48,7 +48,7 @@ let cratePlugin = {
     })
 
     build.onLoad({ filter: /.*/, namespace: 'cargo-crate-wasi-ns' }, async args => {
-      return await cargo_artifact(args, 'wasm32-wasi');
+      return await cargo_artifact(args, 'wasm32-wasip1');
     })
 
     build.onResolve({ filter: /^wasi-config-internal-160e0777-0ea8-4def-88e7-c5297cfcb824:.*$/ }, args => ({

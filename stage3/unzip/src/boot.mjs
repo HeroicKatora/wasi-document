@@ -66,32 +66,30 @@ export default async function(configuration) {
   }
 
   const rootdir = configuration.fds[3];
-  configuration.fds[0] = rootdir.path_open(0, "proc/0/fd/0", 0).fd_obj;
-  configuration.fds[1] = rootdir.path_open(0, "proc/0/fd/1", 0).fd_obj;
-  configuration.fds[2] = rootdir.path_open(0, "proc/0/fd/2", 0).fd_obj;
+  configuration.fds[0] = rootdir.path_open(0, "proc/0/fd/0", 0, 1).fd_obj;
+  configuration.fds[1] = rootdir.path_open(0, "proc/0/fd/1", 0, 1).fd_obj;
+  configuration.fds[2] = rootdir.path_open(0, "proc/0/fd/2", 0, 1).fd_obj;
   configuration.args.length = 0;
 
   const input_decoder = new TextDecoder('utf-8');
   const assign_arguments = (path, push_with, cname) => {
     cname = cname || 'cmdline';
     let cmdline = undefined;
-    if (cmdline = rootdir.path_open(0, path).fd_obj) {
-      if (!cmdline instanceof configuration.WASI.OpenFile) {
-        console.log(`Invalid file source for ${cname} ignored`);
-      } else {
-        const data = cmdline.file.data;
-        let nul_split = -1;
-        while (nul_split = data.indexOf(0)) {
-          const arg = data.subarray(0, nul_split);
-          push_with(arg);
-          data = data.subarray(nul_split + 1);
-        }
+    if (cmdline = rootdir.path_open(0, path, 0, 1).fd_obj) {
+      let data = cmdline.file.data;
+      let nul_split = -1;
+      while (nul_split = data.indexOf(0)) {
+        const arg = data.subarray(0, nul_split);
+        push_with(arg);
+        data = data.subarray(nul_split + 1);
       }
+    } else {
+      console.log('No initial', cname);
     }
   }
 
-  assign_arguments("proc/0/cmdline", configuration.args.push, "cmdline");
-  assign_arguments("proc/0/environ", configuration.env.push, "environ");
+  assign_arguments("proc/0/cmdline", (e) => configuration.args.push(e), "cmdline");
+  assign_arguments("proc/0/environ", (e) => configuration.env.push(e), "environ");
 
   try {
     console.log('start', configuration);
