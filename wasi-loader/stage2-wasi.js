@@ -290,6 +290,7 @@ async function mount({ module_or_path, wasi_root_fs }) {
   let blob = new Blob([module.file.data.buffer], { type: 'application/javascript' });
   let blobURL = URL.createObjectURL(blob);
   let stage3_module = (await import(blobURL));
+  configuration.fallback_shell = fallback_shell;
 
   console.log('executing boot module');
   try {

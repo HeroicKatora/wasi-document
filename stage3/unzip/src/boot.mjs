@@ -78,11 +78,13 @@ export default async function(configuration) {
     if (cmdline = rootdir.path_open(0, path, 0, 1).fd_obj) {
       let data = cmdline.file.data;
       let nul_split = -1;
-      while (nul_split = data.indexOf(0)) {
+      while ((nul_split = data.indexOf(0)) >= 0) {
         const arg = data.subarray(0, nul_split);
-        push_with(arg);
+        push_with(input_decoder.decode(arg));
         data = data.subarray(nul_split + 1);
       }
+
+      push_with(input_decoder.decode(data));
     } else {
       console.log('No initial', cname);
     }
@@ -111,9 +113,17 @@ export default async function(configuration) {
 
     console.log('done');
   } catch (e) {
-    console.dir(typeof(e), e);
-    console.log('at ', e.fileName, e.lineNumber, e.columnNumber);
-    console.log(e.stack);
+    if (typeof(e) == 'string' && e == 'exit with exit code 0') {
+      const [stdin, stdout, stderr] = configuration.fds;
+      const body = document.getElementsByTagName('body')[0];
+      body.innerText = new TextDecoder().decode(stdout.file.data);
+      body.title = new TextDecoder().decode(stderr.file.data);
+    } else {
+      console.dir(typeof(e), e);
+      console.log('at ', e.fileName, e.lineNumber, e.columnNumber);
+      console.log(e.stack);
+      configuration.fallback_shell(configuration, e);
+    }
   } finally {
     const [stdin, stdout, stderr] = configuration.fds;
     console.log('Result(stdin )', new TextDecoder().decode(stdin.file.data));
