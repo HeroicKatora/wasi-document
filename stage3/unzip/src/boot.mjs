@@ -26,6 +26,12 @@ export default async function(configuration) {
    * Chrome monopoly leading to bad outcomes, this is one. And no one in
    * particular is at fault of course.
    */
+  async function reap_into_inner_text(proc) {
+    const [stdin, stdout, stderr] = proc.configuration.fds;
+    proc.element.innerText = new TextDecoder().decode(stdout.file.data);
+    proc.element.title = new TextDecoder().decode(stderr.file.data);
+  }
+
   console.log('Reached stage3 successfully', configuration);
   const wasm = configuration.wasm_module;
 
@@ -93,8 +99,31 @@ export default async function(configuration) {
   assign_arguments("proc/0/cmdline", (e) => configuration.args.push(e), "cmdline");
   assign_arguments("proc/0/environ", (e) => configuration.env.push(e), "environ");
 
+  let reaper = [];
+
   try {
-    console.log('start', configuration);
+    console.log('Dispatch stage3 into init', configuration);
+
+    // The init process controls the whole body in the end.
+    reaper.push({
+      configuration: configuration,
+      // FIXME: hardcoded but permissible?
+      post_module: reap_into_inner_text,
+      // FIXME: hardcoded, should be configurable
+      override_file: 'proc/0/display.mjs',
+      // The element context.
+      //
+      // FIXME: hardcoded, should be configurable. Also if we launch multiple
+      // process instances concurrently then they are configured by finding a
+      // number of `<template>` elements that contain instructions for a
+      // derived configuration in that shared environment. Then the context is
+      // that element itself, allowing it to be replaced with the actual
+      // rendering intent.
+      //
+      // FIXME: but replacement should also be possible early if we want to
+      // avoid flicker.
+      element: document.getElementsByTagName('body')[0],
+    });
 
     var source_headers = {};
     const wasmblob = new Blob([configuration.wasm], { type: 'application/wasm' });
@@ -110,15 +139,8 @@ export default async function(configuration) {
       const instance = await WebAssembly.instantiate(wasm, imports);
       await newWasi.start({ 'exports': instance.exports });
     }
-
-    console.log('done');
   } catch (e) {
-    if (typeof(e) == 'string' && e == 'exit with exit code 0') {
-      const [stdin, stdout, stderr] = configuration.fds;
-      const body = document.getElementsByTagName('body')[0];
-      body.innerText = new TextDecoder().decode(stdout.file.data);
-      body.title = new TextDecoder().decode(stderr.file.data);
-    } else {
+    if (typeof(e) == 'string' && e == 'exit with exit code 0') {} else {
       console.dir(typeof(e), e);
       console.log('at ', e.fileName, e.lineNumber, e.columnNumber);
       console.log(e.stack);
@@ -129,6 +151,32 @@ export default async function(configuration) {
     console.log('Result(stdin )', new TextDecoder().decode(stdin.file.data));
     console.log('Result(stdout)', new TextDecoder().decode(stdout.file.data));
     console.log('Result(stderr)', new TextDecoder().decode(stderr.file.data));
+  }
+
+  let display = await Promise.allSettled(reaper.map(async function(proc) {
+    const override_file = proc.configuration.fds[3]
+      ?.path_open(0, proc.override_file, 0, 0)
+      ?.fd_obj;
+
+    let post_handler = proc.post_module;
+
+    if (override_file) {
+      let blob = new Blob([override_file.file.data.buffer], { type: 'application/javascript' });
+      let blobURL = URL.createObjectURL(blob);
+      post_handler = (await import(blobURL)).default;
+    }
+
+    // FIXME: unclean. We expose all our WASI internals here. The exact classes
+    // etc. While this may sometimes be necessary for precise control and the
+    // layer is, after all, below us and thus our 'target platform' it would be
+    // much nicer if we had a more fine-grained decision about the exposed
+    // object where everything / most is opt-in and explicitly requested.
+    return await post_handler(proc);
+  }));
+
+  let have_an_error = undefined;
+  if ((have_an_error = display.filter(el => el.reason !== undefined)).length > 0) {
+    configuration.fallback_shell(configuration, have_an_error);
   }
 }
 
