@@ -1,3 +1,68 @@
+#let top_countries = {
+	let country_and_year(arr) = {
+		(arr.at("Country Name"), arr.at("Year"))
+	}
+
+	let country_key_str(arr) = {
+		let key = country_and_year(arr);
+		key.at(0) + key.at(1)
+	}
+
+	let population = csv("datasets/population.csv", delimiter: ",", row-type: dictionary)
+	let gdp = csv("datasets/gdp.csv", delimiter: ",", row-type: dictionary)
+
+	let pop_keys = population
+		.map(it => (country_key_str(it), 1)).to-dict()
+	let all_keys = gdp
+		.filter(it => pop_keys.at(country_key_str(it), default:0) == 1)
+		.map(it => (country_key_str(it), 1)).to-dict()
+
+	let contains_country(arr) = {
+		all_keys.at(country_key_str(arr), default: 0) == 1
+	}
+
+	population = population.filter(contains_country).sorted(key: country_key_str)
+	gdp = gdp.filter(contains_country).sorted(key: country_key_str)
+
+	let gdp_by_pop(arr) = {
+		let pop = arr.at(0)
+		let gdp = arr.at(1)
+
+		let per_pop = float(gdp.at("Value")) / float(pop.at("Value"))
+		(country_and_year(pop), per_pop)
+	}
+
+	let countries_pop_and_gdp = population.zip(gdp).map(gdp_by_pop)
+		.sorted()
+		.dedup(key: it => it.at(0).at(0))
+		.sorted(key: it => -it.at(1))
+
+	countries_pop_and_gdp.slice(0, 5)
+}
+
+Top 5 Countries ranked by their GDP per population:
+
+#figure(
+	table(
+		columns: 3,
+		[Country], [Year], [GDP per poulation],
+		..(top_countries.flatten().map(it => [#it]))
+	),
+	caption: [Note: This table was computed in your browser],
+	numbering: none,
+)
+
+You can find the dataset embedded in the document. You can extract it from the
+original HTML file if you treat it as a tar archive with `base64` encoded file
+data. For instance, decode all files into a directory `data-root`:
+
+```bash
+tar xf out.html --exclude='' \
+  --to-command='mkdir -p data-root/"$(dirname $TAR_FILENAME)" && base64 -d > data-root/"$TAR_FILENAME"'
+```
+
+
+#pagebreak()
 // Test multiline math.
 
 --- math-align-basic ---
